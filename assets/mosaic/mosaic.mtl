@@ -2,11 +2,33 @@
   "__type__": "cc.Material",
   "_name": "",
   "_objFlags": 0,
+  "__editorExtras__": {},
   "_native": "",
   "_effectAsset": {
-    "__uuid__": "c8f66d17-351a-48da-a12c-0212d28575c4"
+    "__uuid__": "37df0b04-b59a-4b8d-bc81-50138923a71b",
+    "__expectedType__": "cc.EffectAsset"
   },
   "_techIdx": 0,
-  "_defines": [],
-  "_props": []
+  "_defines": [
+    {
+      "USE_TEXTURE": true
+    }
+  ],
+  "_states": [
+    {
+      "rasterizerState": {},
+      "depthStencilState": {},
+      "blendState": {
+        "targets": [
+          {}
+        ]
+      }
+    }
+  ],
+  "_props": [
+    {
+      "xBlockCount": 50,
+      "yBlockCount": 50
+    }
+  ]
 }

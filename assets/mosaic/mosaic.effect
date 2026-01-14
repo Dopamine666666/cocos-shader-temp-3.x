@@ -1,45 +1,120 @@
 // Effect Syntax Guide: https://docs.cocos.com/creator/manual/zh/shader/index.html
 
+// Copyright (c) 2017-2020 Xiamen Yaji Software Co., Ltd.
 CCEffect %{
   techniques:
-  - name: opaque
-    passes:
-    - vert: legacy/main-functions/general-vs:vert # builtin header
-      frag: unlit-fs:frag
-      properties: &props
-        mainTexture:    { value: white }
-        mainColor:      { value: [1, 1, 1, 1], editor: { type: color } }
-  - name: transparent
-    passes:
-    - vert: general-vs:vert # builtin header
-      frag: unlit-fs:frag
+  - passes:
+    - vert: sprite-vs:vert
+      frag: sprite-fs:frag
+      depthStencilState:
+        depthTest: false
+        depthWrite: false
       blendState:
         targets:
         - blend: true
           blendSrc: src_alpha
           blendDst: one_minus_src_alpha
-          blendSrcAlpha: src_alpha
           blendDstAlpha: one_minus_src_alpha
-      properties: *props
+      rasterizerState:
+        cullMode: none
+      properties:
+        alphaThreshold: { value: 0.5 }
+        # 将x，y轴分为val份
+        xBlockCount: { value: 100 }
+        yBlockCount: { value: 100 }
 }%
 
-CCProgram unlit-fs %{
+CCProgram sprite-vs %{
   precision highp float;
-  #include <legacy/output>
-  #include <legacy/fog-fs>
+  #include <builtin/uniforms/cc-global>
+  #if USE_LOCAL
+    #include <builtin/uniforms/cc-local>
+  #endif
+  #if SAMPLE_FROM_RT
+    #include <common/common-define>
+  #endif
+  in vec3 a_position;
+  in vec2 a_texCoord;
+  in vec4 a_color;
 
-  in vec2 v_uv;
-  in vec3 v_position;
+  out vec4 color;
+  out vec2 v_uv0;
 
-  uniform sampler2D mainTexture;
+  vec4 vert () {
+    vec4 pos = vec4(a_position, 1);
 
-  uniform Constant {
-    vec4 mainColor;
+    #if USE_LOCAL
+      pos = cc_matWorld * pos;
+    #endif
+
+    #if USE_PIXEL_ALIGNMENT
+      pos = cc_matView * pos;
+      pos.xyz = floor(pos.xyz);
+      pos = cc_matProj * pos;
+    #else
+      pos = cc_matViewProj * pos;
+    #endif
+
+    v_uv0 = a_texCoord;
+    #if SAMPLE_FROM_RT
+      CC_HANDLE_RT_SAMPLE_FLIP(v_uv0);
+    #endif
+    color = a_color;
+
+    return pos;
+  }
+}%
+
+CCProgram sprite-fs %{
+  precision highp float;
+  #include <builtin/internal/embedded-alpha>
+  #include <builtin/internal/alpha-test>
+
+  in vec4 color;
+
+  #if USE_TEXTURE
+    in vec2 v_uv0;
+    #pragma builtin(local)
+    layout(set = 2, binding = 12) uniform sampler2D cc_spriteTexture;
+  #endif
+
+  uniform mosaicParams {
+    float xBlockCount;
+    float yBlockCount;
   };
 
   vec4 frag () {
-    vec4 col = mainColor * texture(mainTexture, v_uv);
-    CC_APPLY_FOG(col, v_position);
-    return CCFragOutput(col);
+    vec4 o = vec4(1, 1, 1, 1);
+
+    // 处理临界情况
+    float xCount = xBlockCount;
+    if (xCount <= 0.0) xCount = 1.0;
+
+    float yCount = yBlockCount;
+    if (yCount <= 0.0) yCount = 1.0;
+
+    // 单个马赛克网格的宽高
+    float blockWidth = 1.0 / xCount;
+    float blockHeight = 1.0 / yCount;
+
+    // x,y轴马赛克网格的索引
+    float xIdx = floor(v_uv0.x / blockWidth);
+    float yIdx = floor(v_uv0.y / blockHeight);
+
+    // 纹理坐标取当前uv映射网格的中心
+    float posX = (xIdx + 0.5) * blockWidth;
+    float posY = (yIdx + 0.5) * blockHeight;
+
+    #if USE_TEXTURE
+      o *= CCSampleWithAlphaSeparated(cc_spriteTexture, vec2(posX, posY));
+      #if IS_GRAY
+        float gray  = 0.2126 * o.r + 0.7152 * o.g + 0.0722 * o.b;
+        o.r = o.g = o.b = gray;
+      #endif
+    #endif
+
+    o *= color;
+    ALPHA_TEST(o);
+    return o;
   }
 }%
