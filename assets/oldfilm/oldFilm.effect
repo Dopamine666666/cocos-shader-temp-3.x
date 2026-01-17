@@ -1,0 +1,155 @@
+// Copyright (c) 2017-2020 Xiamen Yaji Software Co., Ltd.
+CCEffect %{
+  techniques:
+  - passes:
+    - vert: sprite-vs:vert
+      frag: sprite-fs:frag
+      depthStencilState:
+        depthTest: false
+        depthWrite: false
+      blendState:
+        targets:
+        - blend: true
+          blendSrc: src_alpha
+          blendDst: one_minus_src_alpha
+          blendDstAlpha: one_minus_src_alpha
+      rasterizerState:
+        cullMode: none
+      properties:
+        alphaThreshold: { value: 0.5 }
+        grainIntensity: { value: 3.25 }
+        vignetteIntensity: { value: 0.8 }
+        fadeColor: { value: [0.15, 0.15, 0.05, 1.0] }
+}%
+
+CCProgram sprite-vs %{
+  precision highp float;
+  #include <builtin/uniforms/cc-global>
+  #if USE_LOCAL
+    #include <builtin/uniforms/cc-local>
+  #endif
+  #if SAMPLE_FROM_RT
+    #include <common/common-define>
+  #endif
+  in vec3 a_position;
+  in vec2 a_texCoord;
+  in vec4 a_color;
+
+  out vec4 v_color;
+  out vec2 v_uv0;
+
+  vec4 vert () {
+    vec4 pos = vec4(a_position, 1);
+
+    #if USE_LOCAL
+      pos = cc_matWorld * pos;
+    #endif
+
+    #if USE_PIXEL_ALIGNMENT
+      pos = cc_matView * pos;
+      pos.xyz = floor(pos.xyz);
+      pos = cc_matProj * pos;
+    #else
+      pos = cc_matViewProj * pos;
+    #endif
+
+    v_uv0 = a_texCoord;
+    #if SAMPLE_FROM_RT
+      CC_HANDLE_RT_SAMPLE_FLIP(v_uv0);
+    #endif
+    v_color = a_color;
+
+    return pos;
+  }
+}%
+
+CCProgram sprite-fs %{
+  precision highp float;
+  #include <builtin/internal/embedded-alpha>
+  #include <builtin/internal/alpha-test>
+  #include <builtin/uniforms/cc-global>
+
+  in vec4 v_color;
+
+  uniform oldFilmParams {
+    vec4 fadeColor;
+    float grainIntensity;
+    float vignetteIntensity;
+  };
+
+  #if USE_TEXTURE
+    in vec2 v_uv0;
+    #pragma builtin(local)
+    layout(set = 2, binding = 12) uniform sampler2D cc_spriteTexture;
+  #endif
+
+  // 胶卷颗粒生成函数
+  float filmGrain(vec2 uv, float time) {
+    return fract(sin(dot(uv * time, vec2(12.9898, 78.233))) * 43758.5453);
+  }
+
+  // 暗角效果
+  float vignette(vec2 uv) {
+    vec2 center = vec2(0.5, 0.5);
+    float dis = distance(uv, center);
+
+    return 1.0 - smoothstep(0.3, 0.8, dis * vignetteIntensity);
+  }
+
+  // 胶片曲线
+  vec3 filmCurve(vec3 color) {
+    vec3 x = color * 1.2;
+    vec3 curve = x * (1.0 / (1.0 + exp(-5.0 * (x - 0.5))));
+    return mix(color, curve, 0.7);
+  }
+
+  // 色彩分级
+  vec3 filmColorGrade(vec3 color) {
+    vec3 shadows = vec3(0.1, 0.25, 0.3);
+    vec3 midtones = vec3(0.7, 0.5, 0.3);
+
+    // 计算亮度
+    float luminance = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    vec3 graded = mix(shadows, midtones, smoothstep(0.2, 0.8, luminance));
+
+    return mix(color, graded * color, 0.4);
+  }
+
+  // 褪色效果
+  vec3 filmFade(vec3 color) {
+    return mix(color, fadeColor.rgb, 0.15);
+  }
+
+  vec4 film(vec4 color, vec2 uv) {
+    color.rgb = filmColorGrade(color.rgb);
+
+    color.rgb = filmFade(color.rgb);
+
+    color.rgb *= vignette(uv);
+
+    float grain = filmGrain(uv, cc_time.x) * grainIntensity;
+
+    color.rbg += (grain - 0.5) * 0.1;
+
+    return color;
+  }
+
+  vec4 frag () {
+    vec4 o = vec4(1, 1, 1, 1);
+
+    #if USE_TEXTURE
+      o *= CCSampleWithAlphaSeparated(cc_spriteTexture, v_uv0);
+      #if IS_GRAY
+        float gray  = 0.2126 * o.r + 0.7152 * o.g + 0.0722 * o.b;
+        o.r = o.g = o.b = gray;
+      #endif
+    #endif
+
+    o *= v_color;
+    ALPHA_TEST(o);
+
+    o = film(o, v_uv0);
+
+    return o;
+  }
+}%
