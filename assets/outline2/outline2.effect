@@ -1,0 +1,125 @@
+// Copyright (c) 2017-2020 Xiamen Yaji Software Co., Ltd.
+CCEffect %{
+  techniques:
+  - passes:
+    - vert: sprite-vs:vert
+      frag: sprite-fs:frag
+      depthStencilState:
+        depthTest: false
+        depthWrite: false
+      blendState:
+        targets:
+        - blend: true
+          blendSrc: src_alpha
+          blendDst: one_minus_src_alpha
+          blendDstAlpha: one_minus_src_alpha
+      rasterizerState:
+        cullMode: none
+      properties:
+        alphaThreshold: { value: 0.5 }
+        # texture: { value: white }
+        textureSize: { value: [256, 256] }
+}%
+
+CCProgram sprite-vs %{
+  precision highp float;
+  #include <builtin/uniforms/cc-global>
+  #if USE_LOCAL
+    #include <builtin/uniforms/cc-local>
+  #endif
+  #if SAMPLE_FROM_RT
+    #include <common/common-define>
+  #endif
+  in vec3 a_position;
+  in vec2 a_texCoord;
+  in vec4 a_color;
+
+  out vec4 v_color;
+  out vec2 v_uv0;
+
+  vec4 vert () {
+    vec4 pos = vec4(a_position, 1);
+
+    #if USE_LOCAL
+      pos = cc_matWorld * pos;
+    #endif
+
+    #if USE_PIXEL_ALIGNMENT
+      pos = cc_matView * pos;
+      pos.xyz = floor(pos.xyz);
+      pos = cc_matProj * pos;
+    #else
+      pos = cc_matViewProj * pos;
+    #endif
+
+    v_uv0 = a_texCoord;
+    #if SAMPLE_FROM_RT
+      CC_HANDLE_RT_SAMPLE_FLIP(v_uv0);
+    #endif
+    v_color = a_color;
+
+    return pos;
+  }
+}%
+
+CCProgram sprite-fs %{
+  precision highp float;
+  #include <builtin/internal/embedded-alpha>
+  #include <builtin/internal/alpha-test>
+
+  in vec4 v_color;
+
+  in vec2 v_uv0;
+  #pragma builtin(local)
+  layout(set = 2, binding = 12) uniform sampler2D cc_spriteTexture;
+
+  // uniform sampler2D texture;
+  uniform outline2Params {
+    vec2 textureSize;
+  };
+
+  float luminance(vec4 c) {
+      return 0.299 * c.r + 0.587 * c.g + 0.114 * c.b;    
+  }
+
+  vec4 frag () {
+    vec4 o = vec4(1, 1, 1, 1);
+
+    o *= CCSampleWithAlphaSeparated(cc_spriteTexture, v_uv0);
+
+    if (o.a < 0.1) discard;
+
+    vec2 pixelSize = 1.0 / textureSize;
+
+    // 获取八个方向的像素
+    vec4 topLeft = texture(cc_spriteTexture, v_uv0 + vec2(-pixelSize.x, pixelSize.y));
+    vec4 topRight = texture(cc_spriteTexture, v_uv0 + vec2(pixelSize.x, pixelSize.y));
+    vec4 bottomLeft = texture(cc_spriteTexture, v_uv0 + vec2(-pixelSize.x, -pixelSize.y));
+    vec4 bottomRight = texture(cc_spriteTexture, v_uv0 + vec2(pixelSize.x, -pixelSize.y));
+
+    vec4 top = texture(cc_spriteTexture, v_uv0 + vec2(0.0, pixelSize.y));
+    vec4 bottom = texture(cc_spriteTexture, v_uv0 + vec2(0.0, -pixelSize.y));
+    vec4 left = texture(cc_spriteTexture, v_uv0 + vec2(-pixelSize.x, 0.0));
+    vec4 right = texture(cc_spriteTexture, v_uv0 + vec2(pixelSize.x, 0.0));
+
+    // 通过sobel算子计算水平与垂直方向的梯度
+    // 分别表示对应方向上亮度变化的趋势,gx为正，表示从左向右变亮
+    vec4 gx = -topLeft - 2.0 * left - bottomLeft + topRight + 2.0 * right + bottomRight;
+    vec4 gy = -topLeft - 2.0 * top - topRight + bottomLeft + 2.0 * bottom + bottomRight;
+
+    // r or g or b
+    // float edge = length(vec2(gx.r, gy.r));
+
+    float edge = length(vec2(luminance(gx), luminance(gy)));
+
+    edge = smoothstep(0.1, 0.3, edge);
+
+    vec4 finalColor = vec4(vec3(1.0 - min(edge * 5.0, 1.0)), 1.0);
+
+    // if (finalColor.r > 0.0) discard;
+
+    ALPHA_TEST(finalColor);
+
+    return finalColor;
+  }
+}%
