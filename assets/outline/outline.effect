@@ -1,0 +1,136 @@
+// Copyright (c) 2017-2020 Xiamen Yaji Software Co., Ltd.
+CCEffect %{
+  techniques:
+  - passes:
+    - vert: sprite-vs:vert
+      frag: sprite-fs:frag
+      depthStencilState:
+        depthTest: false
+        depthWrite: false
+      blendState:
+        targets:
+        - blend: true
+          blendSrc: src_alpha
+          blendDst: one_minus_src_alpha
+          blendDstAlpha: one_minus_src_alpha
+      rasterizerState:
+        cullMode: none
+      properties:
+        alphaThreshold: { value: 0.5 }
+        glowColor: { value: [1.0, 0.8, 0.3, 1.0] }
+        glowSpread: { value: 0.04, editor: { range: [0.0, 0.2], step: 0.01 } }
+        textureAspect: { value: [1.0, 1.0] }
+}%
+
+CCProgram sprite-vs %{
+  precision highp float;
+  #include <builtin/uniforms/cc-global>
+  #if USE_LOCAL
+    #include <builtin/uniforms/cc-local>
+  #endif
+  #if SAMPLE_FROM_RT
+    #include <common/common-define>
+  #endif
+  in vec3 a_position;
+  in vec2 a_texCoord;
+  in vec4 a_color;
+
+  out vec4 v_color;
+  out vec2 v_uv0;
+
+  vec4 vert () {
+    vec4 pos = vec4(a_position, 1);
+
+    #if USE_LOCAL
+      pos = cc_matWorld * pos;
+    #endif
+
+    #if USE_PIXEL_ALIGNMENT
+      pos = cc_matView * pos;
+      pos.xyz = floor(pos.xyz);
+      pos = cc_matProj * pos;
+    #else
+      pos = cc_matViewProj * pos;
+    #endif
+
+    v_uv0 = a_texCoord;
+    #if SAMPLE_FROM_RT
+      CC_HANDLE_RT_SAMPLE_FLIP(v_uv0);
+    #endif
+    v_color = a_color;
+
+    return pos;
+  }
+}%
+
+CCProgram sprite-fs %{
+  precision highp float;
+  #include <builtin/internal/embedded-alpha>
+  #include <builtin/internal/alpha-test>
+
+  in vec4 v_color;
+
+  in vec2 v_uv0;
+  #pragma builtin(local)
+  layout(set = 2, binding = 12) uniform sampler2D cc_spriteTexture;
+
+  uniform outlineParams {
+    vec4 glowColor;
+    vec2 textureAspect;
+    float glowSpread;
+  };
+
+  vec4 frag () {
+    vec4 o = vec4(1, 1, 1, 1);
+
+    o *= CCSampleWithAlphaSeparated(cc_spriteTexture, v_uv0);
+
+    o *= v_color;
+    ALPHA_TEST(o);
+
+    // o.a > 0.5, 则视为非透明像素点，直接返回原rgba
+    if (o.a > 0.5) return o;
+
+    // 对透明像素点四周进行检测；
+    // 检测方向数量
+    const int DIR_COUNT = 80;
+    // 每个方向检测的步长
+    const int STEP_COUNT = 20;
+    // 每一步的长度
+    float stepSize = glowSpread / float(STEP_COUNT);
+    // 最小距离为glowSpread
+    float minDist = glowSpread;
+
+    for (int dir = 0; dir < DIR_COUNT; dir++) {
+      // 渐变效果，获取最近非透明像素距离
+      // if (minDist < glowSpread) break;
+
+      // 当前角度
+      float angle = 2.0 * 3.1415926 * float(dir) / float(DIR_COUNT);
+      // 方向向量
+      vec2 dirVec = vec2(cos(angle), sin(angle));
+      // new_uv = uv + dirVec * dist
+
+      for (int s = 1; s <= STEP_COUNT; s++) {
+        float dist = float(s) * stepSize;
+        vec2 offset = dirVec * dist / textureAspect;
+        float a = texture(cc_spriteTexture, v_uv0 + offset).a;
+
+        // 当前步长检测到非透明像素，停止当前方向检测
+        if (a > 0.5) {
+          minDist = min(minDist, dist);
+          break;
+        }
+      }
+    }
+
+    if (minDist < glowSpread) {
+      o = glowColor;
+      // 渐变发光
+      float glowFactor = smoothstep(glowSpread, 0.0, minDist);
+      o *= glowFactor;
+    }
+
+    return o;
+  }
+}%
